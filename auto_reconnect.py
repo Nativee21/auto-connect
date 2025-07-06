@@ -1,0 +1,380 @@
+import pyautogui
+import requests 
+import time
+import cv2
+import numpy as np
+import os
+import psutil
+import subprocess
+import pygetwindow as gw
+
+# === SETTINGS ===
+IMAGE_FOLDER = "disconnect_screens"
+JOIN_BUTTONS_FOLDER = "join_buttons"
+CHECK_INTERVAL = 30
+JOIN_DELAY = 5
+RUST_PROCESS_NAME = "RustClient.exe"
+RUST_STEAM_APP_ID = "steam://rungameid/252490"
+SERVER_IP = "connect vanilla.rustoria.us:28010"  # ← Replace with the real IP
+WEBHOOK_URL = "https://discord.com/api/webhooks/1391307089779097661/Z0iAi2tSBjtWQ7R0W9j1KPkyyZPY8GAzNaBess8YLcYU29DbOfHjutkgK3-L9sMsG_gU"
+
+
+# === FILES TO CREATE ===
+PLAY_BUTTON = "play_button.png"
+FAVORITES_BUTTON = "favorites_button.png"
+RUSTY_MOOSE_BUTTON = "rusty_moose_server.png"
+
+# === UTILITY FUNCTIONS ===
+
+def log(message):
+    print(message)
+    try:
+        requests.post(WEBHOOK_URL, json={"content": message})
+    except Exception as e:
+        log(f"❌ Failed to send webhook: {e}")
+
+
+def is_rust_running():
+    return any(proc.name() == RUST_PROCESS_NAME for proc in psutil.process_iter())
+
+
+
+def launch_rust():
+    log("🟡 Launching Rust...")
+    subprocess.Popen(["start", RUST_STEAM_APP_ID], shell=True)
+
+def load_templates(folder):
+    templates = []
+    for filename in os.listdir(folder):
+        path = os.path.join(folder, filename)
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            templates.append(cv2.imread(path, 0))
+    return templates
+
+def match_any_template(screen_gray, templates, threshold=0.8):
+    for template in templates:
+        result = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
+        if (result >= threshold).any():
+            return True
+    return False
+
+def is_disconnected(templates):
+    try:
+        screen = pyautogui.screenshot()
+        screen_np = np.array(screen)
+        screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_BGR2GRAY)
+        return match_any_template(screen_gray, templates)
+    except Exception as e:
+        log(f"❌ is_disconnected() error: {e}")
+        return False
+
+
+def try_click_specific(image_path, retries=3, delay=1):
+    for attempt in range(retries):
+        try:
+            location = pyautogui.locateOnScreen(image_path, confidence=0.7)
+            if location:
+                pyautogui.moveTo(location.left + location.width // 2, location.top + location.height // 2)
+                pyautogui.click()
+                log(f"✅ Clicked: {image_path}")
+                return True
+        except Exception as e:
+            log(f"❌ Error clicking {image_path} (attempt {attempt+1}): {e}")
+        time.sleep(delay)
+    log(f"❌ Could not find: {image_path}")
+    return False
+
+
+def try_click_any_button(folder):
+    log(f"🔎 Searching for buttons in: {folder}")
+    for filename in os.listdir(folder):
+        if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            continue
+        path = os.path.join(folder, filename)
+        location = pyautogui.locateOnScreen(path, confidence=0.7)
+        if location:
+            pyautogui.moveTo(location.left + location.width // 2, location.top + location.height // 2)
+            pyautogui.click()
+            log(f"✅ Clicked button: {filename}")
+            return True
+    return False
+
+
+def is_loading_into_server(templates):
+    screen = pyautogui.screenshot()
+    screen_np = np.array(screen)
+    screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_BGR2GRAY)
+    return match_any_template(screen_gray, templates)
+
+def wait_for_server_loading(templates, timeout=30):
+    log("⏳ Waiting for loading screen...")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if is_loading_into_server(templates):
+            log("🚀 Server loading detected.")
+            return True
+        time.sleep(2)
+    log("❌ Loading screen not detected in time.")
+    return False
+
+
+def connect_via_console():
+    try:
+        log("🧭 Connecting via F1 console...")
+        pyautogui.press('f1')  # Open console
+        time.sleep(1)
+
+        pyautogui.typewrite(SERVER_IP)
+        pyautogui.press('enter')
+        time.sleep(2)
+
+        pyautogui.press('f1')  # Close console
+        log("⌛ Waiting to detect loading screen...")
+
+        for _ in range(30):  # Check for 30 seconds
+            try:
+                if is_loading_into_server(load_templates("f1_loading_screens")):
+                    log("✅ Server loading detected.")
+                    return True
+            except Exception as inner_e:
+                log(f"❌ Error checking loading screen: {inner_e}")
+            time.sleep(1)
+
+        log("❌ Loading screen not detected in time.")
+        return False
+    except Exception as e:
+        log(f"❌ connect_via_console() error: {e}")
+        return False
+
+
+
+
+def click_through_menu():
+    try:
+        log("🧭 Navigating menu...")
+
+        if not try_click_specific(PLAY_BUTTON):
+            return False
+        time.sleep(2)
+
+        if not try_click_specific(FAVORITES_BUTTON):
+            return False
+        time.sleep(2)
+
+        if try_click_specific(RUSTY_MOOSE_BUTTON):
+            time.sleep(2)
+            if try_click_any_button(JOIN_BUTTONS_FOLDER):
+                time.sleep(JOIN_DELAY)
+                return True
+            else:
+                log("❌ Join button not found. Falling back to console...")
+        else:
+            log("❌ Rusty Moose not found in favorites. Trying console method...")
+
+        return connect_via_console()
+    except Exception as e:
+        log(f"❌ click_through_menu() error: {e}")
+        return False
+
+
+def connect_via_f1():
+    log("🧩 Connecting using F1 console...")
+    pyautogui.press('f1')
+    time.sleep(1)
+    pyautogui.write(SERVER_IP, interval=0.05)
+    pyautogui.press('enter')
+    time.sleep(1)
+    pyautogui.press('f1')  # close F1 console
+    time.sleep(2)
+
+
+def is_dead():
+    try:
+        templates = load_templates("death_screens")
+        screen = pyautogui.screenshot()
+        screen_np = np.array(screen)
+        screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_BGR2GRAY)
+        return match_any_template(screen_gray, templates)
+    except Exception as e:
+        log(f"❌ is_dead() error: {e}")
+        return False
+
+
+def try_click_respawn():
+    log("☠️ Trying to click respawn...")
+    location = pyautogui.locateOnScreen("respawn_button.png", confidence=0.8)
+    if location:
+        pyautogui.moveTo(location.left + location.width // 2, location.top + location.height // 2)
+        pyautogui.click()
+        log("✅ Clicked respawn.")
+        return True
+    log("❌ Respawn button not found.")
+    return False
+
+def is_asleep():
+    try:
+        templates = load_templates("asleep_screens")
+        screen = pyautogui.screenshot()
+        screen_np = np.array(screen)
+        screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_BGR2GRAY)
+        return match_any_template(screen_gray, templates)
+    except Exception as e:
+        log(f"❌ is_asleep() error: {e}")
+        return False
+
+
+def try_click_to_wake():
+    log("😴 Trying to wake up...")
+    pyautogui.click()
+    time.sleep(1)
+
+def is_in_game():
+    templates = load_templates("ingame_screens")
+    screen = pyautogui.screenshot()
+    screen_np = np.array(screen)
+    screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_BGR2GRAY)
+    return match_any_template(screen_gray, templates)
+
+def do_360_turn():
+    log("🔄 Doing 360 turn...")
+    pyautogui.mouseDown(button='right')  # Hold right-click to aim
+    width, height = pyautogui.size()
+    y = height // 2
+    start_x = width // 3
+    end_x = (width * 2) // 3
+    steps = 50
+
+    for i in range(steps):
+        x = start_x + (end_x - start_x) * (i / steps)
+        pyautogui.moveTo(x, y, duration=0.02)
+
+    pyautogui.mouseUp(button='right')
+
+
+import random
+
+def simulate_human_movement():
+    log("🎮 Simulating human-like activity...")
+
+    # 1. Do a 360-degree turn
+    do_360_turn()
+
+    # 2. Jiggle or look up/down
+    if random.random() < 0.7:
+        log("🧠 Jiggle head...")
+        pyautogui.moveRel(20, 0, duration=0.2)
+        pyautogui.moveRel(-40, 0, duration=0.2)
+        pyautogui.moveRel(20, 0, duration=0.2)
+
+    if random.random() < 0.5:
+        log("👀 Look up/down...")
+        pyautogui.moveRel(0, random.choice([-40, 40]), duration=0.3)
+
+    # 3. Walk a little with WASD
+    if random.random() < 0.6:
+        simulate_wasd_movement()
+
+    # 4. Maybe crouch or jump
+    if random.random() < 0.4:
+        action = random.choice(['ctrl', 'space'])
+        log(f"🔘 Pressing {action}")
+        pyautogui.keyDown(action)
+        time.sleep(0.2)
+        pyautogui.keyUp(action)
+
+    log("✅ Done simulating movement.")
+
+def is_steam_update_window_open():
+    titles = gw.getAllTitles()
+    return any("rust" in title.lower() and "update" in title.lower() for title in titles)
+
+
+def simulate_wasd_movement():
+    log("🏃 Simulating WASD movement...")
+
+    directions = ['w', 'a', 's', 'd']
+    move_count = random.randint(1, 3)  # Do 1–3 movements
+
+    for _ in range(move_count):
+        key = random.choice(directions)
+        duration = random.uniform(1, 3)  # 1 to 3 seconds
+        log(f"➡️ Moving {key.upper()} for {duration:.1f}s")
+
+        pyautogui.keyDown(key)
+        time.sleep(duration)
+        pyautogui.keyUp(key)
+
+        # Optional delay between moves
+        time.sleep(random.uniform(0.5, 1))
+
+f1_templates = load_templates("f1_loading_screens")  # Make sure this folder exists
+
+# === MAIN LOOP ===
+def main():
+    log("🟢 Rust Auto-Reconnect Script Started")
+    disconnect_templates = load_templates(IMAGE_FOLDER)
+
+    while True:
+        if not is_rust_running():
+            log("🚫 Rust not running. Attempting to launch...")
+
+        launch_attempts = 0
+        while not is_rust_running():
+            if is_steam_update_window_open():
+                log("🛠️ Rust is updating via Steam. Waiting for update to complete...")
+            else:
+                log("🟡 Launching Rust...")
+                launch_rust()
+
+            launch_attempts += 1
+            if launch_attempts > 10:
+                log("❌ Tried launching Rust 10 times. Something might be wrong.")
+                break
+
+            time.sleep(30)  # Wait 30 seconds between retries
+        else:
+            log("✅ Rust successfully launched.")
+            continue
+
+        if is_dead():
+            log("☠️ Dead detected. Clicking respawn...")
+            try_click_respawn()
+            time.sleep(10)
+            continue
+
+        if is_asleep():
+            log("😴 Asleep detected. Clicking to wake...")
+            try_click_to_wake()
+            time.sleep(5)
+            continue
+
+        if is_in_game():
+            log("✅ Fully awake. Simulating movement...")
+            simulate_human_movement()
+            time.sleep(random.randint(45, 75))  # Random cooldown between movements
+            continue
+
+
+
+        if is_disconnected(disconnect_templates):
+            log("⚠️ Disconnected. Reconnecting...")
+            success = click_through_menu()
+            if not success:
+                log("❌ Failed to reconnect. Retrying...")
+                time.sleep(10)
+            else:
+                log("🎮 Reconnect flow complete.")
+                time.sleep(30)
+            continue
+
+        log("🤔 Unknown state. Waiting 30 seconds...")
+        time.sleep(30)
+
+
+if __name__ == "__main__":
+    while True:
+        try:
+            main()
+        except Exception as e:
+            log(f"❌ MAIN LOOP ERROR: {e}")
+            time.sleep(5)  # wait a bit and try again
