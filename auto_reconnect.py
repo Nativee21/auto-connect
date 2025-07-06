@@ -7,6 +7,7 @@ import os
 import psutil
 import subprocess
 import pygetwindow as gw
+import random
 
 # === SETTINGS ===
 IMAGE_FOLDER = "disconnect_screens"
@@ -31,7 +32,7 @@ def log(message):
     try:
         requests.post(WEBHOOK_URL, json={"content": message})
     except Exception as e:
-        log(f"❌ Failed to send webhook: {e}")
+        print(f"❌ Failed to send webhook: {e}")
 
 
 def is_rust_running():
@@ -307,7 +308,6 @@ def simulate_wasd_movement():
         # Optional delay between moves
         time.sleep(random.uniform(0.5, 1))
 
-f1_templates = load_templates("f1_loading_screens")  # Make sure this folder exists
 
 # === MAIN LOOP ===
 def main():
@@ -318,23 +318,23 @@ def main():
         if not is_rust_running():
             log("🚫 Rust not running. Attempting to launch...")
 
-        launch_attempts = 0
-        while not is_rust_running():
-            if is_steam_update_window_open():
-                log("🛠️ Rust is updating via Steam. Waiting for update to complete...")
+            launch_attempts = 0
+            while not is_rust_running():
+                if is_steam_update_window_open():
+                    log("🛠️ Rust is updating via Steam. Waiting for update to complete...")
+                else:
+                    log("🟡 Launching Rust...")
+                    launch_rust()
+    
+                launch_attempts += 1
+                if launch_attempts > 10:
+                    log("❌ Tried launching Rust 10 times. Something might be wrong.")
+                    break
+    
+                time.sleep(30)  # Wait 30 seconds between retries
             else:
-                log("🟡 Launching Rust...")
-                launch_rust()
-
-            launch_attempts += 1
-            if launch_attempts > 10:
-                log("❌ Tried launching Rust 10 times. Something might be wrong.")
-                break
-
-            time.sleep(30)  # Wait 30 seconds between retries
-        else:
-            log("✅ Rust successfully launched.")
-            continue
+                log("✅ Rust successfully launched.")
+                continue
 
         if is_dead():
             log("☠️ Dead detected. Clicking respawn...")
