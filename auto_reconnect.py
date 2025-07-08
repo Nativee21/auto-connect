@@ -1,5 +1,5 @@
 import pyautogui
-import requests 
+import requests
 import time
 import cv2
 import numpy as np
@@ -7,6 +7,9 @@ import os
 import psutil
 import subprocess
 import pygetwindow as gw
+import json
+import threading
+import discord
 
 # === SETTINGS ===
 IMAGE_FOLDER = "disconnect_screens"
@@ -15,8 +18,38 @@ CHECK_INTERVAL = 30
 JOIN_DELAY = 5
 RUST_PROCESS_NAME = "RustClient.exe"
 RUST_STEAM_APP_ID = "steam://rungameid/252490"
-SERVER_IP = "connect vanilla.rustoria.us:28010"  # ← Replace with the real IP
-WEBHOOK_URL = "https://discord.com/api/webhooks/1391307089779097661/Z0iAi2tSBjtWQ7R0W9j1KPkyyZPY8GAzNaBess8YLcYU29DbOfHjutkgK3-L9sMsG_gU"
+
+# Defaults used when config file does not exist
+DEFAULT_SERVER_IP = "connect vanilla.rustoria.us:28010"
+DEFAULT_WEBHOOK = ""
+DEFAULT_TOKEN = ""
+
+CONFIG_FILE = "config.json"
+
+
+DEFAULT_CONFIG = {
+    "server_ip": DEFAULT_SERVER_IP,
+    "webhook": DEFAULT_WEBHOOK,
+    "token": DEFAULT_TOKEN,
+}
+
+
+def load_config():
+    if not os.path.exists(CONFIG_FILE):
+        return DEFAULT_CONFIG.copy()
+    with open(CONFIG_FILE, "r") as f:
+        data = json.load(f)
+    cfg = DEFAULT_CONFIG.copy()
+    cfg.update(data)
+    return cfg
+
+
+def save_config(cfg):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+config = load_config()
 
 
 # === FILES TO CREATE ===
@@ -28,10 +61,13 @@ RUSTY_MOOSE_BUTTON = "rusty_moose_server.png"
 
 def log(message):
     print(message)
+    webhook = config.get("webhook")
+    if not webhook:
+        return
     try:
-        requests.post(WEBHOOK_URL, json={"content": message})
+        requests.post(webhook, json={"content": message})
     except Exception as e:
-        log(f"❌ Failed to send webhook: {e}")
+        print(f"Failed to send webhook: {e}")
 
 
 def is_rust_running():
@@ -42,6 +78,14 @@ def is_rust_running():
 def launch_rust():
     log("🟡 Launching Rust...")
     subprocess.Popen(["start", RUST_STEAM_APP_ID], shell=True)
+
+
+def close_rust():
+    """Gracefully close Rust using the in-game console."""
+    pyautogui.press('f1')
+    time.sleep(1)
+    pyautogui.typewrite('quit')
+    pyautogui.press('enter')
 
 def load_templates(folder):
     templates = []
@@ -118,13 +162,13 @@ def wait_for_server_loading(templates, timeout=30):
     return False
 
 
-def connect_via_console():
+def connect_via_console(ip):
     try:
         log("🧭 Connecting via F1 console...")
         pyautogui.press('f1')  # Open console
         time.sleep(1)
 
-        pyautogui.typewrite(SERVER_IP)
+        pyautogui.typewrite(ip)
         pyautogui.press('enter')
         time.sleep(2)
 
@@ -149,7 +193,7 @@ def connect_via_console():
 
 
 
-def click_through_menu():
+def click_through_menu(ip):
     try:
         log("🧭 Navigating menu...")
 
@@ -171,17 +215,17 @@ def click_through_menu():
         else:
             log("❌ Rusty Moose not found in favorites. Trying console method...")
 
-        return connect_via_console()
+        return connect_via_console(ip)
     except Exception as e:
         log(f"❌ click_through_menu() error: {e}")
         return False
 
 
-def connect_via_f1():
+def connect_via_f1(ip):
     log("🧩 Connecting using F1 console...")
     pyautogui.press('f1')
     time.sleep(1)
-    pyautogui.write(SERVER_IP, interval=0.05)
+    pyautogui.write(ip, interval=0.05)
     pyautogui.press('enter')
     time.sleep(1)
     pyautogui.press('f1')  # close F1 console
@@ -202,12 +246,13 @@ def is_dead():
 
 def try_click_respawn():
     log("☠️ Trying to click respawn...")
-    location = pyautogui.locateOnScreen("respawn_button.png", confidence=0.8)
-    if location:
-        pyautogui.moveTo(location.left + location.width // 2, location.top + location.height // 2)
-        pyautogui.click()
-        log("✅ Clicked respawn.")
-        return True
+    for img in ["respawn_button.png", "respawn2_button.png"]:
+        location = pyautogui.locateOnScreen(img, confidence=0.8)
+        if location:
+            pyautogui.moveTo(location.left + location.width // 2, location.top + location.height // 2)
+            pyautogui.click()
+            log(f"✅ Clicked {img}")
+            return True
     log("❌ Respawn button not found.")
     return False
 
@@ -310,30 +355,32 @@ def simulate_wasd_movement():
 f1_templates = load_templates("f1_loading_screens")  # Make sure this folder exists
 
 # === MAIN LOOP ===
-def main():
+def automation_loop():
+    global running
     log("🟢 Rust Auto-Reconnect Script Started")
     disconnect_templates = load_templates(IMAGE_FOLDER)
 
-    while True:
+    while running:
         if not is_rust_running():
             log("🚫 Rust not running. Attempting to launch...")
 
-        launch_attempts = 0
-        while not is_rust_running():
-            if is_steam_update_window_open():
-                log("🛠️ Rust is updating via Steam. Waiting for update to complete...")
-            else:
-                log("🟡 Launching Rust...")
-                launch_rust()
+            launch_attempts = 0
+            while running and not is_rust_running():
+                if is_steam_update_window_open():
+                    log("🛠️ Rust is updating via Steam. Waiting for update to complete...")
+                else:
+                    log("🟡 Launching Rust...")
+                    launch_rust()
 
-            launch_attempts += 1
-            if launch_attempts > 10:
-                log("❌ Tried launching Rust 10 times. Something might be wrong.")
-                break
+                launch_attempts += 1
+                if launch_attempts > 10:
+                    log("❌ Tried launching Rust 10 times. Something might be wrong.")
+                    break
 
-            time.sleep(30)  # Wait 30 seconds between retries
-        else:
-            log("✅ Rust successfully launched.")
+                time.sleep(30)  # Wait 30 seconds between retries
+
+            if is_rust_running():
+                log("✅ Rust successfully launched.")
             continue
 
         if is_dead():
@@ -358,7 +405,8 @@ def main():
 
         if is_disconnected(disconnect_templates):
             log("⚠️ Disconnected. Reconnecting...")
-            success = click_through_menu()
+            ip = config.get("server_ip", DEFAULT_SERVER_IP)
+            success = click_through_menu(ip)
             if not success:
                 log("❌ Failed to reconnect. Retrying...")
                 time.sleep(10)
@@ -371,10 +419,77 @@ def main():
         time.sleep(30)
 
 
+running = False
+
+
+def start_thread():
+    thread = threading.Thread(target=automation_loop, daemon=True)
+    thread.start()
+
+
+intents = discord.Intents.default()
+bot = discord.Bot(intents=intents)
+
+
+@bot.event
+async def on_ready():
+    log(f"🤖 Bot is online as {bot.user}")
+
+
+@bot.slash_command(description="Start the automation loop")
+async def start(ctx: discord.ApplicationContext):
+    global running
+    if running:
+        await ctx.send("Bot is already running.")
+        return
+    running = True
+    start_thread()
+    await ctx.send("🟢 Started automation.")
+
+
+@bot.slash_command(description="Stop the automation loop and close Rust")
+async def stop(ctx: discord.ApplicationContext):
+    global running
+    running = False
+    close_rust()
+    await ctx.send("🔴 Stopped automation and closed Rust.")
+
+
+@bot.slash_command(description="Join a new Rust server by IP")
+async def join(ctx: discord.ApplicationContext, ip: str):
+    if not is_rust_running():
+        log("🟡 Launching Rust before joining new server...")
+        launch_rust()
+        time.sleep(20)
+    pyautogui.press('f1'); time.sleep(1)
+    pyautogui.typewrite('disconnect'); pyautogui.press('enter')
+    time.sleep(5)
+    connect_via_f1(ip)
+    config["server_ip"] = ip
+    save_config(config)
+    await ctx.send(f"🔁 Joined new server: {ip}")
+
+
+@bot.slash_command(description="Set default server IP")
+async def setserver(ctx: discord.ApplicationContext, ip: str):
+    config["server_ip"] = ip
+    save_config(config)
+    await ctx.send(f"✅ Set default server IP to {ip}")
+
+
+@bot.slash_command(description="Set Discord webhook URL")
+async def webhook(ctx: discord.ApplicationContext, url: str):
+    config["webhook"] = url
+    save_config(config)
+    await ctx.send("✅ Webhook set.")
+
+
+TOKEN = config.get("token") or os.getenv("DISCORD_TOKEN")
+
 if __name__ == "__main__":
-    while True:
-        try:
-            main()
-        except Exception as e:
-            log(f"❌ MAIN LOOP ERROR: {e}")
-            time.sleep(5)  # wait a bit and try again
+    if TOKEN:
+        bot.run(TOKEN)
+    else:
+        log("❌ Discord token not provided. Running without bot.")
+        running = True
+        automation_loop()
