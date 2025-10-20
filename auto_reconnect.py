@@ -7,6 +7,7 @@ import os
 import psutil
 import subprocess
 import pygetwindow as gw
+import random
 
 # === SETTINGS ===
 IMAGE_FOLDER = "disconnect_screens"
@@ -31,7 +32,7 @@ def log(message):
     try:
         requests.post(WEBHOOK_URL, json={"content": message})
     except Exception as e:
-        log(f"❌ Failed to send webhook: {e}")
+        print(f"❌ Failed to send webhook: {e}")
 
 
 def is_rust_running():
@@ -307,7 +308,6 @@ def simulate_wasd_movement():
         # Optional delay between moves
         time.sleep(random.uniform(0.5, 1))
 
-f1_templates = load_templates("f1_loading_screens")  # Make sure this folder exists
 
 # === MAIN LOOP ===
 def main():
